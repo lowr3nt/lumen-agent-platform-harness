@@ -13,7 +13,11 @@ from google.genai import types
 from gateway.audit import log_audit_event
 from gateway.session import get_session_history, append_session_turns
 
-app = FastAPI(title="Lumen Zero-Trust Agent Gateway with Vertex AI & Model Armor")
+app = FastAPI(
+    title="Lumen Agent Platform Gateway",
+    version="1.1.0",
+    description="Zero-trust, hardened gateway for enterprise generative agent workflows.",
+)
 security = HTTPBearer()
 
 PROJECT_ID = "project-a661dfac-6f3d-4776-a43"
