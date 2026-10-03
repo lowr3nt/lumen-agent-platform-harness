@@ -1,0 +1,9 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+python-jose[cryptography]>=3.3.0
+requests>=2.31.0
+google-genai>=0.1.1
+google-cloud-modelarmor>=0.2.0
+google-cloud-logging>=3.11.0
+google-cloud-firestore>=2.19.0

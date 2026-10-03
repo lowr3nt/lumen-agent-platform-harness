@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Dict, List, Optional, Any
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 
 from gateway.audit import log_audit_event
+from gateway.session import get_session_history, append_session_turns
 
 app = FastAPI(title="Lumen Zero-Trust Agent Gateway with Vertex AI & Model Armor")
 security = HTTPBearer()
@@ -89,9 +90,16 @@ def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str])
     response = armor_client.sanitize_user_prompt(request=request)
     result = response.sanitization_result
 
+    # Check if the overall response flagged a violation
     if result.filter_match_state.name == "MATCH_FOUND":
-        triggered = list(result.filter_results.keys())
-        if "pi_and_jailbreak" in triggered:
+        actual_matches = []
+        for filter_name, filter_res in result.filter_results.items():
+            # Check match state per detector
+            match_state = getattr(filter_res, "filter_match_state", None)
+            if match_state and match_state.name == "MATCH_FOUND":
+                actual_matches.append(filter_name)
+
+        if actual_matches:
             log_audit_event(
                 event_type="SECURITY_PROMPT_BLOCKED",
                 severity="WARNING",
@@ -99,20 +107,19 @@ def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str])
                 groups=groups,
                 action="inbound_prompt_sanitization",
                 status="BLOCKED",
-                details={"triggered_filters": triggered, "template": TEMPLATE_PATH},
+                details={"triggered_filters": actual_matches, "template": TEMPLATE_PATH},
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Safety Policy Violation: Prompt flagged by Model Armor ({', '.join(triggered)}).",
+                detail=f"Safety Policy Violation: Prompt flagged by Model Armor ({', '.join(actual_matches)}).",
             )
 
 def redact_sensitive_pii(text: str, principal: str, groups: List[str]) -> str:
-    redacted_count = 0
     new_text, cc_matches = re.subn(r"\b(?:\d{4}[-\s]?){3}\d{4}\b", "[REDACTED_CREDIT_CARD]", text)
     new_text, ssn_matches = re.subn(r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED_SSN]", new_text)
-    
-    redacted_count = cc_matches + ssn_matches
-    if redacted_count > 0:
+
+    total_redactions = cc_matches + ssn_matches
+    if total_redactions > 0:
         log_audit_event(
             event_type="SECURITY_PII_REDACTED",
             severity="NOTICE",
@@ -123,7 +130,7 @@ def redact_sensitive_pii(text: str, principal: str, groups: List[str]) -> str:
             details={
                 "credit_card_instances": cc_matches,
                 "ssn_instances": ssn_matches,
-                "total_redactions": redacted_count,
+                "total_redactions": total_redactions,
             },
         )
     return new_text
@@ -213,19 +220,43 @@ def invoke_tool(req: ToolInvocationRequest, claims: Dict = Depends(verify_token)
     }
 
 @app.post("/agent/chat")
-def agent_chat(req: AgentInvocationRequest, claims: Dict = Depends(verify_token)):
+def agent_chat(
+    req: AgentInvocationRequest,
+    claims: Dict = Depends(verify_token),
+    x_session_id: Optional[str] = Header(None),
+):
     user_email = claims.get("sub", "unknown_user")
     user_groups: List[str] = claims.get("groups", [])
+    session_id = x_session_id or f"session-adhoc-{user_email}"
 
-    # 1. Inbound Model Armor Check with Audit Log
+    # 1. Inbound Model Armor Check
     sanitize_inbound_prompt(req.prompt, user_email, user_groups)
 
-    # 2. Dynamic Tool Definition Pruning
+    # 2. RBAC Dynamic Tool Pruning
     allowed_tools = [
         TOOL_REGISTRY[name]
         for name, groups in TOOL_PERMISSIONS.items()
         if any(grp in groups for grp in user_groups)
     ]
+
+    # 3. Retrieve Session History from Firestore
+    try:
+        raw_history = get_session_history(session_id, user_email)
+    except PermissionError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Session belongs to a different principal.",
+        )
+
+    # Transform raw turns to types.Content for Vertex AI
+    history_contents: List[types.Content] = []
+    for turn in raw_history:
+        history_contents.append(
+            types.Content(
+                role=turn["role"],
+                parts=[types.Part.from_text(text=turn["text"])],
+            )
+        )
 
     log_audit_event(
         event_type="AGENT_SESSION_INITIATED",
@@ -234,11 +265,17 @@ def agent_chat(req: AgentInvocationRequest, claims: Dict = Depends(verify_token)
         groups=user_groups,
         action="agent_chat",
         status="INITIALIZED",
-        details={"exposed_tools": [fn.__name__ for fn in allowed_tools]},
+        details={
+            "session_id": session_id,
+            "historical_turns_loaded": len(raw_history),
+            "exposed_tools": [fn.__name__ for fn in allowed_tools],
+        },
     )
 
+    # 4. Initialize Multi-Turn Chat
     chat = genai_client.chats.create(
         model="gemini-2.5-flash",
+        history=history_contents,
         config=types.GenerateContentConfig(
             tools=allowed_tools,
             temperature=0.0,
@@ -253,11 +290,20 @@ def agent_chat(req: AgentInvocationRequest, claims: Dict = Depends(verify_token)
     response = chat.send_message(req.prompt)
     model_reply = response.text or ""
 
-    # 3. Outbound Redaction with Audit Log
+    # 5. Outbound PII Redaction
     sanitized_reply = sanitize_outbound_response(model_reply, user_email, user_groups)
+
+    # 6. Save Turn History to Firestore
+    append_session_turns(
+        session_id=session_id,
+        principal=user_email,
+        user_prompt=req.prompt,
+        model_response=sanitized_reply,
+    )
 
     return {
         "status": "success",
+        "session_id": session_id,
         "caller": user_email,
         "authorized_tools": [fn.__name__ for fn in allowed_tools],
         "response": sanitized_reply,
