@@ -1,0 +1,97 @@
+steps:
+  # ------------------------------------------------------------
+  # Step 1: Lint & Syntax Check
+  # ------------------------------------------------------------
+  - name: 'python:3.12-slim'
+    id: 'lint-and-validate'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install --no-cache-dir flake8
+        python -m compileall gateway/ scripts/
+        flake8 gateway/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # ------------------------------------------------------------
+  # Step 2: Build Container Image via Docker Buildx
+  # ------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-image'
+    args:
+      - 'build'
+      - '-t'
+      - '$_AR_LOCATION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/gateway:$_TAG'
+      - '-t'
+      - '$_AR_LOCATION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/gateway:latest'
+      - '.'
+
+  # ------------------------------------------------------------
+  # Step 3: Push Image to Artifact Registry
+  # ------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-image'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '$_AR_LOCATION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/gateway'
+
+  # ------------------------------------------------------------
+  # Step 4: Deploy Candidate Revision (0% Traffic, Tagged)
+  # ------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: 'deploy-candidate'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run deploy $_SERVICE_NAME \
+          --image=$_AR_LOCATION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/gateway:$_TAG \
+          --region=$_REGION \
+          --platform=managed \
+          --service-account=$_RUNTIME_SA \
+          --set-env-vars=PROJECT_ID=$PROJECT_ID,LOCATION=$_REGION \
+          --no-traffic \
+          --tag=candidate
+
+  # ------------------------------------------------------------
+  # Step 5: Run Persona & Multi-Turn Integration Tests on Candidate
+  # ------------------------------------------------------------
+  - name: 'python:3.12-slim'
+    id: 'integration-tests'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install --no-cache-dir requests python-jose
+        export GATEWAY_TARGET_URL="https://candidate---${_SERVICE_NAME}-671703121200.${_REGION}.run.app"
+        echo "Testing candidate endpoint: $$GATEWAY_TARGET_URL"
+        python scripts/test_personas.py
+        python scripts/test_multiturn.py
+
+  # ------------------------------------------------------------
+  # Step 6: Promote Traffic to 100%
+  # ------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: 'promote-traffic'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run services update-traffic $_SERVICE_NAME \
+          --region=$_REGION \
+          --to-latest
+
+substitutions:
+  _TAG: 'manual'
+  _REGION: 'us-central1'
+  _AR_LOCATION: 'us-central1'
+  _AR_REPO: 'lumen-repo'
+  _SERVICE_NAME: 'lumen-agent-gateway'
+  _RUNTIME_SA: 'sa-lumen-gateway@project-a661dfac-6f3d-4776-a43.iam.gserviceaccount.com'
+
+images:
+  - '$_AR_LOCATION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/gateway:$_TAG'
+  - '$_AR_LOCATION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/gateway:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

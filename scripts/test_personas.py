@@ -1,7 +1,12 @@
 import requests
+import os
 
-AGENT_URL = "http://localhost:8080/agent/chat"
-INVOKE_URL = "http://localhost:8080/invoke"
+CLOUD_RUN_BASE = os.getenv(
+    "GATEWAY_TARGET_URL",
+    "https://lumen-agent-gateway-671703121200.us-central1.run.app",
+)
+AGENT_URL = f"{CLOUD_RUN_BASE}/agent/chat"
+INVOKE_URL = f"{CLOUD_RUN_BASE}/invoke"
 
 with open("token_dana.txt", "r") as f:
     token_dana = f.read().strip()

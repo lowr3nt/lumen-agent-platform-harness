@@ -1,7 +1,11 @@
 import uuid
 import requests
+import os
 
-CLOUD_RUN_BASE = "https://lumen-agent-gateway-671703121200.us-central1.run.app"
+CLOUD_RUN_BASE = os.getenv(
+    "GATEWAY_TARGET_URL",
+    "https://lumen-agent-gateway-671703121200.us-central1.run.app",
+)
 AGENT_URL = f"{CLOUD_RUN_BASE}/agent/chat"
 
 with open("token_dana.txt", "r") as f:
