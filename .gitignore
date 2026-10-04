@@ -221,4 +221,9 @@ __marimo__/
 __pycache__/
 *.pyc
 token.txt
-.env
+.envGCP/
+.venv/
+token*.txt
+pytest.ini
+*.pyc
+__pycache__/
