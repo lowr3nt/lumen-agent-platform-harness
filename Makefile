@@ -26,10 +26,11 @@ check:
 	@PYTHONPATH=. $(PYTHON) scripts/lab_check.py
 
 verify:
-	@PYTHONPATH=. $(PYTHON) scripts/verify_gateway.py
+	@test -f token.txt || PYTHONPATH=. $(PYTHON) scripts/generate_tokens.py
+	@PYTHONPATH=. $(PYTHON) scripts/test_gateway.py
 
 demo:
-	@PYTHONPATH=. $(PYTHON) scripts/run_full_demo.py
+	@PYTHONPATH=. $(PYTHON) scripts/test_personas.py
 
 test:
 	@PYTHONPATH=. $(PYTHON) -m pytest tests/ -v
