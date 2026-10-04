@@ -1,0 +1,10 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+token*.txt
+scripts/__pycache__
+gateway/__pycache__

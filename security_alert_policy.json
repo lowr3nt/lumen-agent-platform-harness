@@ -1,0 +1,49 @@
+{
+  "displayName": "Security Threat: Prompt Injection or Authorization Spike",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Prompt Injections Detected (> 0 events in 5m)",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/lumen_prompt_injections\" AND resource.type=\"cloud_run_revision\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ]
+      }
+    },
+    {
+      "displayName": "RBAC Denials Detected (> 2 events in 5m)",
+      "conditionThreshold": {
+        "filter": "metric.type=\"logging.googleapis.com/user/lumen_authz_denials\" AND resource.type=\"cloud_run_revision\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0.006,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ]
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  },
+  "documentation": {
+    "content": "Potential security breach or probing detected on the Lumen Agent Gateway. Investigate recent logs filtering by jsonPayload.event=SECURITY_PROMPT_BLOCKED or jsonPayload.event=SECURITY_AUTHORIZATION_DENIED to identify the attacking principal or IP address.",
+    "mimeType": "text/markdown"
+  }
+}
