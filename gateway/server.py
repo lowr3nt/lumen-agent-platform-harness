@@ -9,9 +9,12 @@ from google.api_core.client_options import ClientOptions
 from google.cloud import modelarmor_v1
 from google import genai
 from google.genai import types
-
+# 3. Local Application Imports (Gateway Modules & Adapters)
 from gateway.audit import log_audit_event
 from gateway.session import get_session_history, append_session_turns
+from gateway.adapters.snowflake import query_customer_record
+from gateway.adapters.databricks import query_campaign_metrics
+from gateway.dlp import redact_sensitive_payload
 
 app = FastAPI(
     title="Lumen Agent Platform Gateway",
