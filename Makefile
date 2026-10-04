@@ -1,52 +1,35 @@
-.PHONY: help setup test check verify demo deploy clean
-
 SHELL := /bin/bash
-PROJECT_ID ?= $(shell gcloud config get-value project 2>/dev/null)
-REGION ?= us-central1
-SERVICE_NAME ?= lumen-agent-gateway
+.DEFAULT_GOAL := help
+
+# Auto-detect modern Python binary
+PYTHON := $(shell which python3.11 2>/dev/null || which python3 2>/dev/null || which python 2>/dev/null)
+PIP := $(PYTHON) -m pip
+
+.PHONY: setup check verify demo test clean help
 
 help:
-	@echo "Lumen Agent Platform Harness - Student & Evaluation Interface"
-	@echo "------------------------------------------------------------"
-	@echo "make setup    - Install dependencies and prepare local environment"
-	@echo "make check    - Run student self-grader and environment diagnostics"
-	@echo "make test     - Run local unit tests (DLP regex & adapter sanitization)"
-	@echo "make verify   - Run Model Armor inbound defense verification"
-	@echo "make demo     - Execute live multi-persona RBAC & DLP matrix (Exam mode)"
-	@echo "make deploy   - Build and deploy gateway revision to Cloud Run"
-	@echo "make clean    - Remove build artifacts, pycache, and temporary tokens"
+	@echo "Lumen Agent Platform Lab Automation"
+	@echo "  make setup   - Auto-install dependencies cleanly"
+	@echo "  make check   - Run preflight diagnostics"
+	@echo "  make verify  - Run Boundary 1 (Model Armor) verification"
+	@echo "  make demo    - Run Boundary 2 & 3 interactive walkthrough"
+	@echo "  make test    - Run automated unit test suite"
 
 setup:
-	@echo "[+] Verifying Python environment..."
-	python3 -c "import sys; assert sys.version_info >= (3, 11), 'Python 3.11+ required'"
-	@echo "[+] Installing pinned dependencies..."
-	pip install --upgrade pip
-	pip install -r requirements.txt
-	@echo "[✓] Setup complete. Active Project: $(PROJECT_ID)"
+	@echo "[+] Provisioning runtime dependencies using $(PYTHON)..."
+	@$(PIP) install --quiet --upgrade pip
+	@$(PIP) install --quiet -r requirements.txt pytest
+	@echo "[✓] Environment dependencies installed."
 
 check:
 	@echo "[+] Running student self-grader and diagnostic checks..."
-	PYTHONPATH=. python scripts/lab_check.py
-
-test:
-	@echo "[+] Running local test suite..."
-	PYTHONPATH=. pytest tests/
+	@PYTHONPATH=. $(PYTHON) scripts/lab_check.py
 
 verify:
-	@echo "[+] Verifying Model Armor policies & prompt-injection filters..."
-	PYTHONPATH=. python scripts/test_model_armor.py
+	@PYTHONPATH=. $(PYTHON) scripts/verify_gateway.py
 
 demo:
-	@echo "[+] Executing end-to-end multi-persona RBAC & DLP live validation..."
-	PYTHONPATH=. python scripts/test_personas.py
+	@PYTHONPATH=. $(PYTHON) scripts/run_full_demo.py
 
-deploy:
-	@echo "[+] Submitting Cloud Build for Cloud Run deployment..."
-	gcloud builds submit --config=cloudbuild.yaml
-	@echo "[✓] Deployment triggered to $(SERVICE_NAME) in $(REGION)."
-
-clean:
-	@echo "[+] Cleaning temporary artifacts..."
-	rm -rf __pycache__ tests/__pycache__ gateway/__pycache__ gateway/adapters/__pycache__
-	rm -f .coverage token*.txt validation_report.txt
-	@echo "[✓] Workspace cleaned."
+test:
+	@PYTHONPATH=. $(PYTHON) -m pytest tests/ -v
