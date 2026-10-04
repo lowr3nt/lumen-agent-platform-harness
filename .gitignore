@@ -227,3 +227,6 @@ token*.txt
 pytest.ini
 *.pyc
 __pycache__/
+
+GCP/
+GCP/**
