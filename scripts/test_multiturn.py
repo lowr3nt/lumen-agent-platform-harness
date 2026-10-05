@@ -4,7 +4,7 @@ import os
 
 CLOUD_RUN_BASE = os.getenv(
     "GATEWAY_TARGET_URL",
-    "https://lumen-agent-gateway-671703121200.us-central1.run.app",
+    "https://lumen-agent-gateway-fpnv56xj2q-uc.a.run.app",
 )
 AGENT_URL = f"{CLOUD_RUN_BASE}/agent/chat"
 
@@ -24,7 +24,7 @@ print(f"Testing Stateful Multi-Turn Session: {session_id}\n")
 print("--- Turn 1: Lookup customer profile ---")
 res1 = requests.post(
     AGENT_URL,
-    json={"prompt": "Can you retrieve the details for customer CUST-9921?"},
+    json={"prompt": "Can you look up customer profile CUST-9921 for me?"},
     headers=headers,
 )
 print(f"Status: {res1.status_code}")
