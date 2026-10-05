@@ -1,5 +1,6 @@
 import os
 import json
+import functools
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -277,6 +278,7 @@ def agent_chat(
 
     # 2. RBAC Dynamic Tool Pruning with Chat-Initiated Audit Logging
     def make_audited_tool(name: str, target_fn):
+        @functools.wraps(target_fn)
         def tool_wrapper(*args, **kwargs):
             log_audit_event(
                 event_type="AGENT_TOOL_INVOKED",
@@ -289,7 +291,6 @@ def agent_chat(
             )
             return target_fn(*args, **kwargs)
         tool_wrapper.__name__ = name
-        tool_wrapper.__doc__ = target_fn.__doc__
         return tool_wrapper
 
     allowed_tools = [
