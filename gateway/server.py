@@ -104,54 +104,18 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
 
 def _extract_triggered_filters(filter_results: Any) -> List[str]:
     """
-    Directly extracts only the filters that reported MATCH_FOUND,
-    handling Google Cloud Model Armor's specific sub-filter protobuf schemas.
+    Names of the Model Armor filters whose result is MATCH_FOUND.
+
+    Each filter result is a protobuf message whose text form contains the line
+    "match_state: MATCH_FOUND" when that filter fired. The token includes the
+    "match_state: " prefix on purpose: a bare "MATCH_FOUND" also matches
+    "NO_MATCH_FOUND" and would flag every filter on every request. This also
+    covers the SDP filter, where match_state is nested inside inspect_result.
     """
-    triggered = []
-    items = filter_results.items() if hasattr(filter_results, "items") else []
-
-    for filter_name, res in items:
-        is_match = False
-
-        # 1. Direct protobuf enum attributes
-        for attr in ["match_state", "filter_match_state", "execution_result"]:
-            val = getattr(res, attr, None)
-            if val is not None:
-                val_str = getattr(val, "name", str(val))
-                if val_str == "MATCH_FOUND":
-                    is_match = True
-                    break
-
-        # 2. Inspect nested sub-filter result messages
-        if not is_match:
-            for sub_attr in dir(res):
-                if sub_attr.endswith("_filter_result"):
-                    sub_res = getattr(res, sub_attr, None)
-                    if sub_res is not None:
-                        for attr in ["match_state", "filter_match_state", "execution_result"]:
-                            val = getattr(sub_res, attr, None)
-                            if val is not None:
-                                val_str = getattr(val, "name", str(val))
-                                if val_str == "MATCH_FOUND":
-                                    is_match = True
-                                    break
-                if is_match:
-                    break
-
-        # 3. Fallback: Serialized dictionary inspection without false-matching NO_MATCH_FOUND
-        if not is_match and hasattr(res, "to_dict"):
-            try:
-                res_dict = res.to_dict()
-                dict_str = json.dumps(res_dict)
-                if '"MATCH_FOUND"' in dict_str and '"NO_MATCH_FOUND"' not in dict_str:
-                    is_match = True
-            except Exception:
-                pass
-
-        if is_match:
-            triggered.append(filter_name)
-
-    return triggered
+    return [
+        name for name, result in filter_results.items()
+        if "match_state: MATCH_FOUND" in str(result)
+    ]
 
 def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str]):
     request = modelarmor_v1.SanitizeUserPromptRequest(

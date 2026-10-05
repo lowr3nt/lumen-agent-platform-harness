@@ -1,6 +1,7 @@
 """
-Centralized Dual-Line Audit Logging Facility for Zero-Trust AI Gateway.
-Outputs human-readable text lines and structured JSON events to Cloud Logging.
+Centralized audit logging facility for the zero-trust AI gateway.
+Each event is printed to stdout and, on Cloud Run, written to Cloud Logging
+as one structured JSON entry in the lumen-agent-security-audit log.
 """
 import os
 import json
@@ -34,8 +35,9 @@ def log_audit_event(
 ):
     """
     Emits security audit telemetry.
-    When running in Cloud Run, writes dual-stream (JSON struct + text) to Cloud Logging.
-    When running locally (tests, check scripts), prints only to terminal.
+    When running in Cloud Run, writes one structured JSON entry to Cloud Logging.
+    The same event is always printed to stdout, which Cloud Run also captures.
+    When running locally (tests, check scripts), prints only to the terminal.
     """
     payload = {
         "event_type": event_type,
@@ -47,19 +49,11 @@ def log_audit_event(
     }
 
     # Human-readable line for console inspection
-    audit_text = f"[{severity}] AUDIT: {json.dumps(payload)}"
-    print(audit_text)
+    print(f"[{severity}] AUDIT: {json.dumps(payload)}")
 
     # Google Cloud Logging structured emission (Cloud Run only)
     if CLOUD_LOGGING_ENABLED and cloud_logger:
         try:
-            cloud_logger.log_struct(
-                payload,
-                severity=severity,
-            )
-            cloud_logger.log_text(
-                audit_text,
-                severity=severity,
-            )
+            cloud_logger.log_struct(payload, severity=severity)
         except Exception as e:
             logger.error(f"Failed to write to Cloud Logging: {e}")
