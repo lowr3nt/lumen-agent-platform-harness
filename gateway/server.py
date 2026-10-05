@@ -97,29 +97,29 @@ def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str])
     response = armor_client.sanitize_user_prompt(request=request)
     result = response.sanitization_result
 
-    # Check if the overall response flagged a violation
-    if result.filter_match_state.name == "MATCH_FOUND":
-        actual_matches = []
-        for filter_name, filter_res in result.filter_results.items():
-            # Check match state per detector
-            match_state = getattr(filter_res, "filter_match_state", None)
-            if match_state and match_state.name == "MATCH_FOUND":
-                actual_matches.append(filter_name)
+    # Inspect top-level match state
+    match_name = getattr(result.filter_match_state, "name", str(result.filter_match_state))
+    if match_name == "MATCH_FOUND" or result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+        triggered = []
+        for name, res in result.filter_results.items():
+            res_str = str(res)
+            if "MATCH_FOUND" in res_str:
+                triggered.append(name)
 
-        if actual_matches:
-            log_audit_event(
-                event_type="SECURITY_PROMPT_BLOCKED",
-                severity="WARNING",
-                principal=principal,
-                groups=groups,
-                action="inbound_prompt_sanitization",
-                status="BLOCKED",
-                details={"triggered_filters": actual_matches, "template": TEMPLATE_PATH},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Safety Policy Violation: Prompt flagged by Model Armor ({', '.join(actual_matches)}).",
-            )
+        flagged_filters = triggered if triggered else ["pi_and_jailbreak"]
+        log_audit_event(
+            event_type="SECURITY_PROMPT_BLOCKED",
+            severity="WARNING",
+            principal=principal,
+            groups=groups,
+            action="inbound_prompt_sanitization",
+            status="BLOCKED",
+            details={"triggered_filters": flagged_filters, "template": TEMPLATE_PATH},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Safety Policy Violation: Prompt flagged by Model Armor ({', '.join(flagged_filters)}).",
+        )
 
 def redact_sensitive_pii(text: str, principal: str, groups: List[str]) -> str:
     new_text, cc_matches = re.subn(r"\b(?:\d{4}[-\s]?){3}\d{4}\b", "[REDACTED_CREDIT_CARD]", text)
