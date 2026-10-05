@@ -1,5 +1,5 @@
+import os
 import json
-import re
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9,11 +9,10 @@ from google.api_core.client_options import ClientOptions
 from google.cloud import modelarmor_v1
 from google import genai
 from google.genai import types
-# 3. Local Application Imports (Gateway Modules & Adapters)
+
+# Local Application Imports
 from gateway.audit import log_audit_event
 from gateway.session import get_session_history, append_session_turns
-from gateway.adapters.snowflake import query_customer_record
-from gateway.adapters.databricks import query_campaign_metrics
 from gateway.dlp import redact_sensitive_payload
 
 app = FastAPI(
@@ -23,10 +22,16 @@ app = FastAPI(
 )
 security = HTTPBearer()
 
-PROJECT_ID = "project-a661dfac-6f3d-4776-a43"
-LOCATION = "us-central1"
+# Flexible environment variable evaluation for local vs Cloud Build environments
+PROJECT_ID = os.getenv("GCP_PROJECT_ID") or os.getenv("PROJECT_ID", "project-a661dfac-6f3d-4776-a43")
+LOCATION = os.getenv("GCP_LOCATION") or os.getenv("LOCATION", "us-central1")
 MODEL_ARMOR_ENDPOINT = f"modelarmor.{LOCATION}.rep.googleapis.com"
 TEMPLATE_PATH = f"projects/{PROJECT_ID}/locations/{LOCATION}/templates/retail-agent-defense"
+
+# Shared test secret and identity provider configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "lumen-test-secret-key")
+JWT_ALGORITHM = "HS256"
+JWT_ISSUER = "lumen-identity-provider"
 
 armor_client = modelarmor_v1.ModelArmorClient(
     client_options=ClientOptions(api_endpoint=MODEL_ARMOR_ENDPOINT)
@@ -81,13 +86,72 @@ class AgentInvocationRequest(BaseModel):
     prompt: str
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
+    token = credentials.credentials
     try:
-        return jwt.get_unverified_claims(credentials.credentials)
-    except JWTError:
+        claims = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+            issuer=JWT_ISSUER,
+            options={"verify_aud": False},
+        )
+        return claims
+    except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or malformed OIDC token",
+            detail=f"Invalid or expired OIDC token: {str(exc)}",
         )
+
+def _extract_triggered_filters(filter_results: Any) -> List[str]:
+    """
+    Directly extracts only the filters that reported MATCH_FOUND,
+    handling Google Cloud Model Armor's specific sub-filter protobuf schemas.
+    """
+    triggered = []
+    items = filter_results.items() if hasattr(filter_results, "items") else []
+
+    for filter_name, res in items:
+        is_match = False
+
+        # 1. Direct protobuf enum attributes
+        for attr in ["match_state", "filter_match_state", "execution_result"]:
+            val = getattr(res, attr, None)
+            if val is not None:
+                val_str = getattr(val, "name", str(val))
+                if val_str == "MATCH_FOUND":
+                    is_match = True
+                    break
+
+        # 2. Inspect nested sub-filter result messages
+        if not is_match:
+            for sub_attr in dir(res):
+                if sub_attr.endswith("_filter_result"):
+                    sub_res = getattr(res, sub_attr, None)
+                    if sub_res is not None:
+                        for attr in ["match_state", "filter_match_state", "execution_result"]:
+                            val = getattr(sub_res, attr, None)
+                            if val is not None:
+                                val_str = getattr(val, "name", str(val))
+                                if val_str == "MATCH_FOUND":
+                                    is_match = True
+                                    break
+                if is_match:
+                    break
+
+        # 3. Fallback: Serialized dictionary inspection without false-matching NO_MATCH_FOUND
+        if not is_match and hasattr(res, "to_dict"):
+            try:
+                res_dict = res.to_dict()
+                dict_str = json.dumps(res_dict)
+                if '"MATCH_FOUND"' in dict_str and '"NO_MATCH_FOUND"' not in dict_str:
+                    is_match = True
+            except Exception:
+                pass
+
+        if is_match:
+            triggered.append(filter_name)
+
+    return triggered
 
 def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str]):
     request = modelarmor_v1.SanitizeUserPromptRequest(
@@ -97,16 +161,16 @@ def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str])
     response = armor_client.sanitize_user_prompt(request=request)
     result = response.sanitization_result
 
-    # Inspect top-level match state
-    match_name = getattr(result.filter_match_state, "name", str(result.filter_match_state))
-    if match_name == "MATCH_FOUND" or result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
-        triggered = []
-        for name, res in result.filter_results.items():
-            res_str = str(res)
-            if "MATCH_FOUND" in res_str:
-                triggered.append(name)
+    match_state = getattr(result.filter_match_state, "name", str(result.filter_match_state))
+    is_blocked = (
+        match_state == "MATCH_FOUND"
+        or result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND
+    )
 
+    if is_blocked:
+        triggered = _extract_triggered_filters(result.filter_results)
         flagged_filters = triggered if triggered else ["pi_and_jailbreak"]
+
         log_audit_event(
             event_type="SECURITY_PROMPT_BLOCKED",
             severity="WARNING",
@@ -121,34 +185,37 @@ def sanitize_inbound_prompt(prompt_text: str, principal: str, groups: List[str])
             detail=f"Safety Policy Violation: Prompt flagged by Model Armor ({', '.join(flagged_filters)}).",
         )
 
-def redact_sensitive_pii(text: str, principal: str, groups: List[str]) -> str:
-    new_text, cc_matches = re.subn(r"\b(?:\d{4}[-\s]?){3}\d{4}\b", "[REDACTED_CREDIT_CARD]", text)
-    new_text, ssn_matches = re.subn(r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED_SSN]", new_text)
-
-    total_redactions = cc_matches + ssn_matches
-    if total_redactions > 0:
-        log_audit_event(
-            event_type="SECURITY_PII_REDACTED",
-            severity="NOTICE",
-            principal=principal,
-            groups=groups,
-            action="outbound_egress_sanitization",
-            status="REDACTED",
-            details={
-                "credit_card_instances": cc_matches,
-                "ssn_instances": ssn_matches,
-                "total_redactions": total_redactions,
-            },
-        )
-    return new_text
-
 def sanitize_outbound_response(raw_text: str, principal: str, groups: List[str]) -> str:
+    # 1. Mask First: Egress DLP sanitization strips PII based on role
+    masked_payload, _ = redact_sensitive_payload(raw_text, principal, groups)
+    sanitized_text = str(masked_payload)
+
+    # 2. Screen Second: Outbound Model Armor evaluation on sanitized text
     request = modelarmor_v1.SanitizeModelResponseRequest(
         name=TEMPLATE_PATH,
-        model_response_data=modelarmor_v1.DataItem(text=raw_text),
+        model_response_data=modelarmor_v1.DataItem(text=sanitized_text),
     )
-    armor_client.sanitize_model_response(request=request)
-    return redact_sensitive_pii(raw_text, principal, groups)
+    response = armor_client.sanitize_model_response(request=request)
+    result = response.sanitization_result
+
+    match_state = getattr(result.filter_match_state, "name", str(result.filter_match_state))
+    if match_state == "MATCH_FOUND" or result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+        triggered = _extract_triggered_filters(result.filter_results)
+        log_audit_event(
+            event_type="SECURITY_MODEL_RESPONSE_BLOCKED",
+            severity="ERROR",
+            principal=principal,
+            groups=groups,
+            action="outbound_response_sanitization",
+            status="BLOCKED",
+            details={"triggered_filters": triggered, "template": TEMPLATE_PATH},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Model output blocked by enterprise safety policies.",
+        )
+
+    return sanitized_text
 
 @app.post("/invoke")
 def invoke_tool(req: ToolInvocationRequest, claims: Dict = Depends(verify_token)):
@@ -186,11 +253,16 @@ def invoke_tool(req: ToolInvocationRequest, claims: Dict = Depends(verify_token)
             detail=f"Access Denied: Identity '{user_email}' with groups {user_groups} is unauthorized to invoke tool '{req.tool}'.",
         )
 
+    # Inbound sanitization on prompt and parameter payload strings
     if req.prompt:
         sanitize_inbound_prompt(req.prompt, user_email, user_groups)
 
-    fn = TOOL_REGISTRY[req.tool]
     params = req.parameters or {}
+    for param_key, param_val in params.items():
+        if isinstance(param_val, str):
+            sanitize_inbound_prompt(param_val, user_email, user_groups)
+
+    fn = TOOL_REGISTRY[req.tool]
 
     log_audit_event(
         event_type="AGENT_TOOL_INVOKED",
@@ -239,9 +311,25 @@ def agent_chat(
     # 1. Inbound Model Armor Check
     sanitize_inbound_prompt(req.prompt, user_email, user_groups)
 
-    # 2. RBAC Dynamic Tool Pruning
+    # 2. RBAC Dynamic Tool Pruning with Chat-Initiated Audit Logging
+    def make_audited_tool(name: str, target_fn):
+        def tool_wrapper(*args, **kwargs):
+            log_audit_event(
+                event_type="AGENT_TOOL_INVOKED",
+                severity="INFO",
+                principal=user_email,
+                groups=user_groups,
+                action="execute_tool",
+                status="EXECUTING",
+                details={"tool": name, "invocation_mode": "chat_agent"},
+            )
+            return target_fn(*args, **kwargs)
+        tool_wrapper.__name__ = name
+        tool_wrapper.__doc__ = target_fn.__doc__
+        return tool_wrapper
+
     allowed_tools = [
-        TOOL_REGISTRY[name]
+        make_audited_tool(name, TOOL_REGISTRY[name])
         for name, groups in TOOL_PERMISSIONS.items()
         if any(grp in groups for grp in user_groups)
     ]
@@ -255,7 +343,6 @@ def agent_chat(
             detail="Access Denied: Session belongs to a different principal.",
         )
 
-    # Transform raw turns to types.Content for Vertex AI
     history_contents: List[types.Content] = []
     for turn in raw_history:
         history_contents.append(
@@ -279,7 +366,7 @@ def agent_chat(
         },
     )
 
-    # 4. Initialize Multi-Turn Chat
+    # 4. Multi-Turn Inference via Gemini
     chat = genai_client.chats.create(
         model="gemini-2.5-flash",
         history=history_contents,
@@ -297,10 +384,10 @@ def agent_chat(
     response = chat.send_message(req.prompt)
     model_reply = response.text or ""
 
-    # 5. Outbound PII Redaction
+    # 5. Outbound DLP Redaction and Model Armor Sanitization
     sanitized_reply = sanitize_outbound_response(model_reply, user_email, user_groups)
 
-    # 6. Save Turn History to Firestore
+    # 6. Persist Turn History
     append_session_turns(
         session_id=session_id,
         principal=user_email,

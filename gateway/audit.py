@@ -1,18 +1,27 @@
+"""
+Centralized Dual-Line Audit Logging Facility for Zero-Trust AI Gateway.
+Outputs human-readable text lines and structured JSON events to Cloud Logging.
+"""
+import os
 import json
-from typing import Any, Dict, List, Optional
-from google.cloud import logging as cloud_logging
+import logging
+from typing import Dict, List, Optional, Any
 
-PROJECT_ID = "project-a661dfac-6f3d-4776-a43"
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("gateway.audit")
 
-# Initialize Google Cloud Logging Client gracefully
-try:
-    client = cloud_logging.Client(project=PROJECT_ID)
-    logger = client.logger("lumen-agent-security-audit")
-except Exception as e:
-    # Graceful fallback for local offline testing / CI without ADC
-    client = None
-    logger = None
-    print(f"[*] Notice: Running without GCP Cloud Logging credentials: {e}")
+CLOUD_LOGGING_ENABLED = False
+cloud_logger = None
+
+# Only bind to Google Cloud Logging when executing inside a Cloud Run container
+if os.getenv("K_SERVICE"):
+    try:
+        from google.cloud import logging as gcp_logging
+        client = gcp_logging.Client()
+        cloud_logger = client.logger("lumen-agent-security-audit")
+        CLOUD_LOGGING_ENABLED = True
+    except Exception as e:
+        logger.warning(f"Could not initialize Cloud Logging in container: {e}")
 
 def log_audit_event(
     event_type: str,
@@ -24,7 +33,9 @@ def log_audit_event(
     details: Optional[Dict[str, Any]] = None,
 ):
     """
-    Emits a structured JSON audit log entry directly to Google Cloud Logging.
+    Emits security audit telemetry.
+    When running in Cloud Run, writes dual-stream (JSON struct + text) to Cloud Logging.
+    When running locally (tests, check scripts), prints only to terminal.
     """
     payload = {
         "event_type": event_type,
@@ -35,12 +46,20 @@ def log_audit_event(
         "details": details or {},
     }
 
-    # Write structured entry to GCP Cloud Logging if connected
-    if logger:
-        try:
-            logger.log_struct(payload, severity=severity)
-        except Exception as e:
-            print(f"[!] Warning: Failed to send log to GCP Cloud Logging: {e}")
+    # Human-readable line for console inspection
+    audit_text = f"[{severity}] AUDIT: {json.dumps(payload)}"
+    print(audit_text)
 
-    # Always output to local stdout for developer and container log capture
-    print(f"[{severity}] AUDIT: {json.dumps(payload)}")
+    # Google Cloud Logging structured emission (Cloud Run only)
+    if CLOUD_LOGGING_ENABLED and cloud_logger:
+        try:
+            cloud_logger.log_struct(
+                payload,
+                severity=severity,
+            )
+            cloud_logger.log_text(
+                audit_text,
+                severity=severity,
+            )
+        except Exception as e:
+            logger.error(f"Failed to write to Cloud Logging: {e}")

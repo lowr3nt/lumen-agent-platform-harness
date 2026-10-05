@@ -1,13 +1,13 @@
 {
-  "displayName": "Security Threat: Prompt Injection or Authorization Spike",
+  "displayName": "Lumen AI Gateway - Enterprise Security Alert Suite",
   "combiner": "OR",
   "conditions": [
     {
-      "displayName": "Prompt Injections Detected (> 0 events in 5m)",
+      "displayName": "Excessive 403 Authorization Denials (RBAC Violations)",
       "conditionThreshold": {
-        "filter": "metric.type=\"logging.googleapis.com/user/lumen_prompt_injections\" AND resource.type=\"cloud_run_revision\"",
+        "filter": "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/gateway_authorization_denials\"",
         "comparison": "COMPARISON_GT",
-        "thresholdValue": 0,
+        "thresholdValue": 0.006,
         "duration": "0s",
         "trigger": {
           "count": 1
@@ -21,11 +21,29 @@
       }
     },
     {
-      "displayName": "RBAC Denials Detected (> 2 events in 5m)",
+      "displayName": "Spike in Model Armor Security Prompt Blocks",
       "conditionThreshold": {
-        "filter": "metric.type=\"logging.googleapis.com/user/lumen_authz_denials\" AND resource.type=\"cloud_run_revision\"",
+        "filter": "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/gateway_security_blocks\"",
         "comparison": "COMPARISON_GT",
-        "thresholdValue": 0.006,
+        "thresholdValue": 0.01,
+        "duration": "0s",
+        "trigger": {
+          "count": 1
+        },
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_RATE"
+          }
+        ]
+      }
+    },
+    {
+      "displayName": "High Rate of Egress Sensitive Data Redactions",
+      "conditionThreshold": {
+        "filter": "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/gateway_pii_redactions\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0.02,
         "duration": "0s",
         "trigger": {
           "count": 1
@@ -40,10 +58,10 @@
     }
   ],
   "alertStrategy": {
-    "autoClose": "1800s"
+    "autoClose": "604800s"
   },
   "documentation": {
-    "content": "Potential security breach or probing detected on the Lumen Agent Gateway. Investigate recent logs filtering by jsonPayload.event=SECURITY_PROMPT_BLOCKED or jsonPayload.event=SECURITY_AUTHORIZATION_DENIED to identify the attacking principal or IP address.",
+    "content": "### Lumen Gateway Security Incident Response\n\nThis policy triggers when security events breach the rate threshold over a 5-minute window (> 2 events at 0.006/s).\n\n**Triage Queries in Cloud Logging:**\n- **Authorization Denials:**\n  ```text\n  resource.type=\"cloud_run_revision\"\n  jsonPayload.event_type=\"SECURITY_AUTHORIZATION_DENIED\"\n  ```\n- **Model Armor Prompt Blocks:**\n  ```text\n  resource.type=\"cloud_run_revision\"\n  jsonPayload.event_type=\"SECURITY_PROMPT_BLOCKED\"\n  ```\n- **Egress PII Redactions:**\n  ```text\n  resource.type=\"cloud_run_revision\"\n  jsonPayload.event_type=\"SECURITY_PII_REDACTED\"\n  ```",
     "mimeType": "text/markdown"
   }
 }
