@@ -1,0 +1,43 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "Lumen gateway: break-it exercises",
+  "description": "Six exercises. Predict before you run. Ask your facilitator for the answer key when you are done.",
+  "steps": [
+    {
+      "file": "gateway/server.py",
+      "pattern": "_extract_triggered_filters",
+      "title": "Exercise A (Warm-up): Break the extractor",
+      "description": "In _extract_triggered_filters change \"match_state: MATCH_FOUND\" to \"MATCH_FOUND\". Run scenario 2.\n\n**Predict first**\n\nWhich filters will the 400 message and the audit event name for the jailbreak prompt?\n\n**Hint**\n\nBoth filters appear in the results every time. What does each one say when it did not fire?"
+    },
+    {
+      "file": "gateway/server.py",
+      "pattern": "functools.wraps",
+      "title": "Exercise B (Warm-up): Remove the wrapper decoration",
+      "description": "Delete the @functools.wraps(target_fn) line in make_audited_tool. Run scenario 5.\n\n**Predict first**\n\nWhat does the model now believe about the tools?\n\n**Hint**\n\nLook at the parameters line printed for each tool."
+    },
+    {
+      "file": "gateway/dlp.py",
+      "pattern": "PATTERN_CREDIT_CARD",
+      "title": "Exercise C (Core): Add IBAN masking",
+      "description": "Mask International Bank Account Numbers as [REDACTED_IBAN] for all callers. Add a test to tests/test_track2_dlp.py. make test should go from 3 passing to 4.\n\n**Predict first**\n\nWhere in mask_text must the new step go, and what breaks if it is in the wrong place?\n\n**Hint**\n\nRead the docstring: some masks run for everyone, some only for non-admins. And each step feeds the next."
+    },
+    {
+      "file": "gateway/server.py",
+      "pattern": "^def verify_token",
+      "title": "Exercise D (Core): Capstone: log failed authentication",
+      "description": "Add a SECURITY_AUTHENTICATION_FAILED audit event when a token is rejected. Then run scenario 1 and confirm each bad token now leaves an event.\n\n**Predict first**\n\nWhat principal and groups can you record when the token could not be verified? What goes in details?\n\n**Hint**\n\nYou cannot trust any claim in a token that failed verification. Record the reason, not the claims."
+    },
+    {
+      "file": "gateway/server.py",
+      "pattern": "^def invoke_tool",
+      "title": "Exercise F (Core): Screen nested parameters",
+      "description": "Send a hostile string inside a nested parameter, for example {\"campaign_name\": {\"note\": \"<injection text>\"}}, to /invoke as Alex. Show the original code returns 200. Then fix invoke_tool so nested strings are screened.\n\n**Predict first**\n\nWhat shapes can a JSON parameter take, and which of them does the current loop miss?\n\n**Hint**\n\nWrite a small generator that yields every string inside dicts and lists."
+    },
+    {
+      "file": "gateway/server.py",
+      "pattern": "def make_audited_tool",
+      "title": "Exercise E (Stretch): Defense in depth on the model door",
+      "description": "Add an authorization check inside tool_wrapper so the chat door denies a tool the caller is not entitled to, even if pruning is wrong. Then hoist make_audited_tool out of agent_chat to module level.\n\n**Predict first**\n\nWhat does the factory need passed in once it is no longer a closure? What event should a denial emit?\n\n**Hint**\n\nReuse the same status values /invoke uses, and set invocation_mode to chat_agent."
+    }
+  ]
+}
